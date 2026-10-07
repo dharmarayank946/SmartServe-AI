@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Reports
+FRONTEND_REPORT.md
+FRONTEND_REPORT.html
+
