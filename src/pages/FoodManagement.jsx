@@ -29,9 +29,11 @@ import {
 } from 'recharts';
 import Modal from '../components/Modal';
 import { apiService } from '../services/apiService';
+import { getFoodItems, addFoodItem, updateFoodItem, deleteFoodItem } from '../services/foodService';
 
 export default function FoodManagement({ onNavigate }) {
-  const [items, setItems] = useState(apiService.getFoodItems());
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   
@@ -51,6 +53,22 @@ export default function FoodManagement({ onNavigate }) {
     currentStock: '',
     unit: 'portions'
   });
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const data = await getFoodItems();
+      setItems(data);
+    } catch (err) {
+      setItems(apiService.getFoodItems());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    loadData();
+  }, []);
 
   const categories = ['All', 'Main Course', 'Appetizers', 'Beverages', 'Desserts'];
 
@@ -89,10 +107,10 @@ export default function FoodManagement({ onNavigate }) {
     setIsModalOpen(true);
   };
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault();
     if (editingItem) {
-      apiService.updateFoodItem(editingItem.id, {
+      await updateFoodItem(editingItem.id, {
         name: formData.name,
         category: formData.category,
         price: Number(formData.price),
@@ -102,7 +120,7 @@ export default function FoodManagement({ onNavigate }) {
         unit: formData.unit
       });
     } else {
-      apiService.addFoodItem({
+      await addFoodItem({
         name: formData.name,
         category: formData.category,
         price: Number(formData.price),
@@ -112,17 +130,18 @@ export default function FoodManagement({ onNavigate }) {
         unit: formData.unit
       });
     }
-    setItems(apiService.getFoodItems());
+    await loadData();
     setIsModalOpen(false);
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (deleteConfirmId) {
-      apiService.deleteFoodItem(deleteConfirmId);
-      setItems(apiService.getFoodItems());
+      await deleteFoodItem(deleteConfirmId);
+      await loadData();
       setDeleteConfirmId(null);
     }
   };
+
 
   // Mock 7-day sales trend data for detail drawer
   const detailTrendData = [

@@ -1,0 +1,49 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smartserve_backend
+    restart: always
+    environment:
+      - PROJECT_NAME=SmartServe AI Backend
+      - API_V1_STR=/api/v1
+      - SECRET_KEY=replace-with-a-32-character-secure-random-secret-key
+      - DEBUG=False
+      - BACKEND_CORS_ORIGINS=["https://smartserve.ai","http://localhost:5173"]
+      - DATABASE_URL=postgresql+psycopg2://smartserve_user:smartserve_pass@postgres:5432/smartserve_db
+      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
+      - RESTAURANT_CITY=Bengaluru
+      - RESTAURANT_LAT=12.9716
+      - RESTAURANT_LON=77.5946
+      - DEFAULT_COUNTRY_CODE=IN
+      - DEFAULT_REGION_CODE=KA
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_PROVIDER=gemini
+      - LLM_MODEL=gemini-1.5-flash
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: smartserve_postgres
+    restart: always
+    environment:
+      - POSTGRES_DB=smartserve_db
+      - POSTGRES_USER=smartserve_user
+      - POSTGRES_PASSWORD=smartserve_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartserve_user -d smartserve_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

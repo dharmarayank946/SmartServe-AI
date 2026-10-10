@@ -1,17 +1,25 @@
 // Central API Configuration & HTTP Client for SmartServe AI
 export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-export const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA !== 'false';
+export const IS_PRODUCTION = Boolean(import.meta.env.PROD);
+export const USE_MOCK_DATA = IS_PRODUCTION
+  ? import.meta.env.VITE_USE_MOCK_DATA === 'true'
+  : import.meta.env.VITE_USE_MOCK_DATA !== 'false';
 
 /**
  * Generic HTTP Fetch wrapper for FastAPI communication
  * Handles JSON parsing, network errors, timeouts, and friendly error messages.
  */
 export async function fetchApi(endpoint, options = {}) {
-  const url = `${API_BASE_URL.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
+  const cleanBaseUrl = API_BASE_URL.replace(/\/$/, '');
+  const cleanEndpoint = endpoint.replace(/^\//, '');
+  const fullEndpoint = cleanEndpoint.startsWith('api/v1') ? cleanEndpoint : `api/v1/${cleanEndpoint}`;
+  const url = `${cleanBaseUrl}/${fullEndpoint}`;
   
+  const token = localStorage.getItem('access_token');
   const defaultHeaders = {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
   };
 
   const config = {
@@ -21,6 +29,12 @@ export async function fetchApi(endpoint, options = {}) {
       ...options.headers,
     },
   };
+
+  // Handle FormData: remove Content-Type so browser sets boundary
+  if (options.body instanceof FormData) {
+    delete config.headers['Content-Type'];
+  }
+
 
   try {
     const controller = new AbortController();
