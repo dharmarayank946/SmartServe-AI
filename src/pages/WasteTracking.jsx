@@ -51,10 +51,11 @@ import {
 import AnimatedCounter from '../components/AnimatedCounter';
 import Modal from '../components/Modal';
 import { apiService } from '../services/apiService';
+import { logWasteRecord } from '../services/wasteService';
 
 export default function WasteTracking({ onNavigate }) {
   // Service Data
-  const wasteData = apiService.getWasteData();
+  const [wasteData, setWasteData] = useState(() => apiService.getWasteData());
   const foodItems = apiService.getFoodItems();
   const sustainabilityScore = apiService.getSustainabilityScore();
   const heatmapData = apiService.getWasteHeatmap();
@@ -72,6 +73,7 @@ export default function WasteTracking({ onNavigate }) {
   const [selectedFoodModal, setSelectedFoodModal] = useState(null);
   const [showPredictionModal, setShowPredictionModal] = useState(false);
   const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
+  const [isSubmittingWaste, setIsSubmittingWaste] = useState(false);
 
   // Toast & Notifications State
   const [successToast, setSuccessToast] = useState('');
@@ -95,19 +97,54 @@ export default function WasteTracking({ onNavigate }) {
     notes: 'Kitchen prepared excess batch during lunch rush.'
   });
 
-  const handleRecordWasteSubmit = (e) => {
+  const handleRecordWasteSubmit = async (e) => {
     e.preventDefault();
-    apiService.recordWasteEntry({
-      itemName: formData.itemName,
-      qty: Number(formData.qty),
-      unit: formData.unit,
-      financialLoss: Number(formData.estimatedCost),
-      reason: formData.reason,
-      date: formData.date
-    });
-    setIsRecordModalOpen(false);
-    setSuccessToast(`✓ Waste record of ${formData.qty} ${formData.unit} for ${formData.itemName} submitted successfully!`);
-    setTimeout(() => setSuccessToast(''), 4500);
+    const qtyNum = Number(formData.qty);
+    const costNum = Number(formData.estimatedCost);
+
+    if (isNaN(qtyNum) || qtyNum <= 0) {
+      setSuccessToast('⚠️ Please enter a valid quantity greater than 0.');
+      setTimeout(() => setSuccessToast(''), 4000);
+      return;
+    }
+
+    setIsSubmittingWaste(true);
+    try {
+      // 1. Log to backend API
+      try {
+        await logWasteRecord({
+          itemName: formData.itemName,
+          quantity: qtyNum,
+          unit: formData.unit,
+          reason: formData.reason,
+          financialLoss: costNum,
+          date: formData.date,
+          time: formData.time || '14:30',
+          notes: formData.notes
+        });
+      } catch (backendErr) {
+        console.warn("Backend waste logging notice:", backendErr.message);
+      }
+
+      // 2. Persist to local app state and reload data
+      apiService.recordWasteEntry({
+        itemName: formData.itemName,
+        qty: qtyNum,
+        unit: formData.unit,
+        financialLoss: costNum,
+        reason: formData.reason,
+        date: formData.date
+      });
+
+      setWasteData(apiService.getWasteData());
+      setIsRecordModalOpen(false);
+      setSuccessToast(`✓ Waste record of ${formData.qty} ${formData.unit} for ${formData.itemName} submitted successfully!`);
+    } catch (err) {
+      setSuccessToast(`❌ Error: ${err.message || 'Failed to record waste'}`);
+    } finally {
+      setIsSubmittingWaste(false);
+      setTimeout(() => setSuccessToast(''), 4500);
+    }
   };
 
   const handleApplyRecommendation = (recText = "Reduce Paneer Curry preparation by 8 portions") => {
@@ -1041,6 +1078,132 @@ export default function WasteTracking({ onNavigate }) {
               </button>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {/* Record Waste Entry Modal */}
+      {isRecordModalOpen && (
+        <Modal
+          isOpen={isRecordModalOpen}
+          onClose={() => setIsRecordModalOpen(false)}
+          title="Record Food Waste Entry"
+        >
+          <form onSubmit={handleRecordWasteSubmit} className="space-y-4 text-xs">
+            <div className="bg-[#081c15] text-white p-3.5 rounded-2xl border border-[#1b4332] space-y-1">
+              <span className="text-[10px] text-[#d4af37] uppercase font-bold tracking-wider">Kitchen Telemetry</span>
+              <p className="text-gray-300 font-medium">Log verified food waste to synchronize real-time analytics and optimize prep algorithms.</p>
+            </div>
+
+            <div>
+              <label className="block font-bold text-gray-700 mb-1">Food Item</label>
+              <select
+                value={formData.itemName}
+                onChange={(e) => setFormData({ ...formData, itemName: e.target.value })}
+                className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              >
+                {foodItems.map(i => (
+                  <option key={i.id} value={i.name}>{i.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Quantity</label>
+                <input
+                  type="number"
+                  required
+                  min="0.1"
+                  step="any"
+                  value={formData.qty}
+                  onChange={(e) => setFormData({ ...formData, qty: e.target.value })}
+                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Unit</label>
+                <select
+                  value={formData.unit}
+                  onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
+                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                >
+                  <option value="portions">portions</option>
+                  <option value="plates">plates</option>
+                  <option value="kg">kg</option>
+                  <option value="liters">liters</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-bold text-gray-700 mb-1">Reason for Waste</label>
+              <select
+                value={formData.reason}
+                onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
+                className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              >
+                <option value="Over-preparation">Over-preparation</option>
+                <option value="Spoilage">Spoilage</option>
+                <option value="Low Demand">Low Demand</option>
+                <option value="Cooking Error">Cooking Error</option>
+                <option value="Customer Return">Customer Return</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Date</label>
+                <input
+                  type="date"
+                  value={formData.date}
+                  onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Estimated Cost Loss (₹)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={formData.estimatedCost}
+                  onChange={(e) => setFormData({ ...formData, estimatedCost: e.target.value })}
+                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-bold text-gray-700 mb-1">Kitchen Notes (Optional)</label>
+              <textarea
+                rows={2}
+                value={formData.notes}
+                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                placeholder="Details about batch or incident..."
+                className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              />
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-3 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setIsRecordModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-gray-600 font-semibold hover:bg-gray-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingWaste}
+                className="px-5 py-2.5 rounded-xl bg-[#1b4332] hover:bg-[#2d6a4f] text-white font-extrabold shadow-md transition-all cursor-pointer flex items-center gap-2 disabled:opacity-50"
+              >
+                <Plus className="w-4 h-4" /> {isSubmittingWaste ? 'Recording...' : 'Record Waste'}
+              </button>
+            </div>
+          </form>
         </Modal>
       )}
 

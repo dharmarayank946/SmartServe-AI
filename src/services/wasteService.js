@@ -19,11 +19,23 @@ export async function getWasteMetrics() {
 
 export async function logWasteRecord(wasteData) {
   if (!USE_MOCK_DATA) {
+    const payload = {
+      food_item_id: wasteData.food_item_id || wasteData.foodItemId || null,
+      item_name: wasteData.item_name || wasteData.itemName || "Paneer Curry",
+      date: wasteData.date || new Date().toISOString().split('T')[0],
+      time: wasteData.time || "14:30",
+      quantity: Number(wasteData.quantity ?? wasteData.qty ?? 1),
+      unit: wasteData.unit || "portions",
+      reason: wasteData.reason || "Over-preparation",
+      financial_loss: Number(wasteData.financial_loss ?? wasteData.financialLoss ?? wasteData.estimatedCost ?? 0),
+      notes: wasteData.notes || ""
+    };
     const res = await fetchApi('/waste', {
       method: 'POST',
-      body: JSON.stringify(wasteData)
+      body: JSON.stringify(payload)
     });
-    if (res.success) return res.data;
+    if (res.success && res.data) return res.data;
+    throw new Error(res.error || 'Failed to record waste entry.');
   }
 
   return { success: true, message: "Waste audit entry logged into database.", wasteData };

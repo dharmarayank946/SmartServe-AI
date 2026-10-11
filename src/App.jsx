@@ -38,17 +38,17 @@ export default function App() {
       case 'prediction':
         return <DemandPrediction onNavigate={(tab) => setActiveTab(tab)} />;
       case 'preparation':
-        return <PrepRecommendation />;
+        return <PrepRecommendation onNavigate={(tab) => setActiveTab(tab)} />;
       case 'datalearning':
         return <DataLearning onNavigate={(tab) => setActiveTab(tab)} />;
       case 'menu':
-        return <FoodManagement />;
+        return <FoodManagement onNavigate={(tab) => setActiveTab(tab)} />;
       case 'sales':
-        return <SalesData />;
+        return <SalesData onNavigate={(tab) => setActiveTab(tab)} />;
       case 'waste':
-        return <WasteTracking />;
+        return <WasteTracking onNavigate={(tab) => setActiveTab(tab)} />;
       case 'analytics':
-        return <Analytics />;
+        return <Analytics onNavigate={(tab) => setActiveTab(tab)} />;
       case 'insights':
         return <AiInsights onNavigate={(tab) => setActiveTab(tab)} />;
       case 'notifications':
