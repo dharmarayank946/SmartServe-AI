@@ -59,7 +59,7 @@ def upgrade() -> None:
         sa.Column('unit', sa.String(length=30), nullable=False, server_default='portions'),
         sa.Column('lead_time_hours', sa.Float(), nullable=False, server_default='1.0'),
         sa.Column('shelf_life_days', sa.Integer(), nullable=False, server_default='1'),
-        sa.Column('ai_optimized', sa.Boolean(), nullable=False, server_default=sa.text('1')),
+        sa.Column('ai_optimized', sa.Boolean(), server_default=sa.text('true'), nullable=False),
         sa.Column('image_url', sa.String(length=500), nullable=True),
         sa.Column('tags', sa.JSON(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
@@ -154,7 +154,7 @@ def upgrade() -> None:
         sa.Column('time_label', sa.String(length=50), nullable=True),
         sa.Column('reason', sa.Text(), nullable=False),
         sa.Column('recommended_action', sa.Text(), nullable=False),
-        sa.Column('is_read', sa.Boolean(), nullable=False, server_default=sa.text('0')),
+        sa.Column('is_read', sa.Boolean(), nullable=False, server_default=sa.text('false')),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.PrimaryKeyConstraint('id')
     )

@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from sqlalchemy.orm import Session
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.models.user import User
 from app.models.restaurant import RestaurantConfig
@@ -13,8 +14,9 @@ from app.models.notification import Notification
 
 def init_db(db: Session) -> None:
     """
-    Seed initial development database with realistic telemetry data
+    Seed initial database with realistic telemetry data
     matching SmartServe AI commercial dataset.
+    Idempotent: does not overwrite existing records or modify existing users.
     """
     # 1. Seed Restaurant Config
     existing_config = db.query(RestaurantConfig).filter_by(branch_id="HYD-BLR-04").first()
@@ -31,18 +33,27 @@ def init_db(db: Session) -> None:
         )
         db.add(config)
 
-    # 2. Seed Admin / Manager User
-    existing_user = db.query(User).filter_by(email="manager@smartserve.ai").first()
+    # 2. Seed Admin / Manager User safely (idempotent, never overwrites existing user)
+    manager_email = (settings.INITIAL_MANAGER_EMAIL or "manager@smartserve.ai").strip().lower()
+    existing_user = db.query(User).filter(User.email.ilike(manager_email)).first()
     if not existing_user:
-        user = User(
-            id="usr-mgr-001",
-            name="SmartServe Manager",
-            email="manager@smartserve.ai",
-            password_hash=get_password_hash("password123"),
-            role="Restaurant Manager",
-            branch_id="HYD-BLR-04"
-        )
-        db.add(user)
+        # Determine initial password securely:
+        # In production (DEBUG=False), INITIAL_MANAGER_PASSWORD must be provided via server environment.
+        # In local development (DEBUG=True), a fallback is allowed if not explicitly provided.
+        init_pass = settings.INITIAL_MANAGER_PASSWORD
+        if not init_pass and settings.DEBUG:
+            init_pass = "SmartServeDev2026!"
+
+        if init_pass:
+            user = User(
+                id="usr-mgr-001",
+                name=settings.INITIAL_MANAGER_NAME or "SmartServe Manager",
+                email=manager_email,
+                password_hash=get_password_hash(init_pass),
+                role=settings.INITIAL_MANAGER_ROLE or "Restaurant Manager",
+                branch_id=settings.INITIAL_MANAGER_BRANCH_ID or "HYD-BLR-04"
+            )
+            db.add(user)
 
     # 3. Seed Food Items
     food_items_data = [

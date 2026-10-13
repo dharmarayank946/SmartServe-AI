@@ -30,6 +30,9 @@ def override_get_db():
 app.dependency_overrides[get_db] = override_get_db
 
 # Initialize database schema and seed data
+from app.core.config import settings
+
+settings.INITIAL_MANAGER_PASSWORD = "TestManagerPassword2026!"
 Base.metadata.create_all(bind=test_engine)
 db = TestingSessionLocal()
 init_db(db)

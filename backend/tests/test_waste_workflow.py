@@ -147,7 +147,7 @@ def test_legitimate_auth_login_grants_waste_access():
     # Attempt login with legitimate credentials -> 200
     good_login = unauth.post("/api/v1/auth/login", json={
         "email": "manager@smartserve.ai",
-        "password": "password123"
+        "password": "TestManagerPassword2026!"
     })
     assert good_login.status_code == 200
     login_data = good_login.json()

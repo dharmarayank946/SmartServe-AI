@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # Database configuration (defaults to local SQLite, production configured via PostgreSQL DATABASE_URL)
     DATABASE_URL: str = "sqlite:///./smartserve.db"
 
+    # Initial Manager Seed Credentials (for first-time environment initialization)
+    INITIAL_MANAGER_EMAIL: str = "manager@smartserve.ai"
+    INITIAL_MANAGER_PASSWORD: str = ""
+    INITIAL_MANAGER_NAME: str = "SmartServe Manager"
+    INITIAL_MANAGER_ROLE: str = "Restaurant Manager"
+    INITIAL_MANAGER_BRANCH_ID: str = "HYD-BLR-04"
+
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:

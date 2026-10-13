@@ -72,12 +72,20 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.user import User
+
+
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    db: Session = Depends(get_db),
 ) -> dict:
     """
     FastAPI dependency that enforces JWT authentication on protected endpoints.
-    Raises HTTP 401 if token is missing, invalid, or expired.
+    Validates token signature and expiration, looks up the user in the database,
+    and returns actual database user attributes.
+    Raises HTTP 401 if token is missing, invalid, expired, or user not found.
     """
     if not credentials or not credentials.credentials:
         raise HTTPException(
@@ -93,10 +101,20 @@ def get_current_user(
             detail="Could not validate credentials or token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    email = str(payload["sub"]).strip().lower()
+    user = db.query(User).filter(User.email.ilike(email)).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User associated with token no longer exists",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return {
-        "email": payload["sub"],
-        "id": "mgr-001",
-        "name": "SmartServe Manager",
-        "role": "Restaurant Manager",
-        "branch_id": "HYD-BLR-04",
+        "email": user.email,
+        "id": user.id,
+        "name": user.name,
+        "role": user.role,
+        "branch_id": user.branch_id,
     }

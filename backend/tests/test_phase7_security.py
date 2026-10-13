@@ -17,7 +17,7 @@ def test_public_endpoints_accessible_without_auth():
     assert res_ready.status_code == 200
     assert res_ready.json()["status"] == "ready"
 
-    res_login = unauth.post("/api/v1/auth/login", json={"email": "manager@smartserve.ai", "password": "password123"})
+    res_login = unauth.post("/api/v1/auth/login", json={"email": "manager@smartserve.ai", "password": "TestManagerPassword2026!"})
     assert res_login.status_code == 200
     assert "access_token" in res_login.json()
 
