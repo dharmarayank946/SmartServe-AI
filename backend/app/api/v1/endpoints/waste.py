@@ -33,7 +33,7 @@ def get_waste_metrics(
         if reason and reason != "All":
             query = query.filter(WasteLog.reason == reason)
 
-        logs = query.order_by(WasteLog.date.desc()).limit(limit).all()
+        logs = query.order_by(WasteLog.date.desc(), WasteLog.created_at.desc()).limit(limit).all()
 
         if not logs:
             return {
@@ -61,8 +61,13 @@ def get_waste_metrics(
         reason_colors = {
             "Over-preparation": "#ef4444",
             "Ingredient Spoilage": "#f97316",
-            "Plate Unconsumed": "#eab308",
+            "Spoilage": "#f97316",
+            "Low Demand": "#a855f7",
+            "Cooking Error": "#3b82f6",
             "Preparation Error": "#3b82f6",
+            "Customer Return": "#eab308",
+            "Plate Unconsumed": "#eab308",
+            "Other": "#6b7280",
         }
 
         waste_by_reason = []
@@ -106,12 +111,12 @@ def get_waste_metrics(
                     "food_item_id": l.food_item_id,
                     "item_name": l.item_name,
                     "date": l.date.isoformat(),
-                    "time": l.time,
+                    "time": l.time or "12:00",
                     "quantity": l.quantity,
                     "unit": l.unit,
                     "reason": l.reason,
                     "financial_loss": l.financial_loss,
-                    "notes": l.notes,
+                    "notes": l.notes or "",
                 }
                 for l in logs
             ],
@@ -133,16 +138,31 @@ def log_waste_entry(
     Log a new waste entry into the database.
     """
     try:
+        # Resolve or validate food_item_id against existing items
+        resolved_food_id = None
+        if waste_in.food_item_id:
+            from app.models.food_item import FoodItem
+            item_obj = db.query(FoodItem).filter(FoodItem.id == waste_in.food_item_id).first()
+            if item_obj:
+                resolved_food_id = item_obj.id
+        if not resolved_food_id and waste_in.item_name:
+            from app.models.food_item import FoodItem
+            item_obj = db.query(FoodItem).filter(FoodItem.name == waste_in.item_name).first()
+            if item_obj:
+                resolved_food_id = item_obj.id
+
+        entry_time = waste_in.time or datetime.now().strftime("%H:%M")
+
         log = WasteLog(
-            food_item_id=waste_in.food_item_id,
+            food_item_id=resolved_food_id,
             item_name=waste_in.item_name,
             date=waste_in.date,
-            time=waste_in.time,
+            time=entry_time,
             quantity=waste_in.quantity,
             unit=waste_in.unit or "portions",
             reason=waste_in.reason,
             financial_loss=waste_in.financial_loss,
-            notes=waste_in.notes,
+            notes=waste_in.notes or "",
         )
         db.add(log)
         db.commit()
@@ -169,4 +189,37 @@ def log_waste_entry(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database error logging waste entry: {str(e)}",
+        )
+
+
+@router.delete("/{log_id}", status_code=status.HTTP_200_OK)
+def delete_waste_entry(
+    log_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Delete a waste log entry from the database by ID.
+    """
+    try:
+        log = db.query(WasteLog).filter(WasteLog.id == log_id).first()
+        if not log:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Waste entry with id '{log_id}' not found",
+            )
+        db.delete(log)
+        db.commit()
+        return {
+            "success": True,
+            "message": f"Waste entry '{log_id}' successfully removed.",
+            "deleted_id": log_id,
+        }
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error deleting waste entry: {str(e)}",
         )

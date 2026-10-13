@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Trash2, 
   Leaf, 
@@ -29,7 +29,9 @@ import {
   Check,
   TrendingUp,
   Activity,
-  Award
+  Award,
+  Lock,
+  X
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -50,13 +52,21 @@ import {
 } from 'recharts';
 import AnimatedCounter from '../components/AnimatedCounter';
 import Modal from '../components/Modal';
+import AuthModal from '../components/AuthModal';
 import { apiService } from '../services/apiService';
-import { logWasteRecord } from '../services/wasteService';
+import { getWasteMetrics, logWasteRecord, deleteWasteRecord } from '../services/wasteService';
+import { getFoodItems } from '../services/foodService';
+import { isAuthenticated, getCurrentUser, logout } from '../services/api';
 
 export default function WasteTracking({ onNavigate }) {
-  // Service Data
-  const [wasteData, setWasteData] = useState(() => apiService.getWasteData());
-  const foodItems = apiService.getFoodItems();
+  // Service Data & Backend State
+  const [wasteMetrics, setWasteMetrics] = useState(null);
+  const [wasteLogs, setWasteLogs] = useState([]);
+  const [foodItems, setFoodItems] = useState(() => apiService.getFoodItems() || []);
+  const [isLoadingMetrics, setIsLoadingMetrics] = useState(true);
+  const [backendError, setBackendError] = useState(null);
+
+  // Static / Auxiliary Analytics
   const sustainabilityScore = apiService.getSustainabilityScore();
   const heatmapData = apiService.getWasteHeatmap();
   const tomorrowRisk = apiService.getTomorrowWasteRisk();
@@ -69,14 +79,19 @@ export default function WasteTracking({ onNavigate }) {
 
   // Modals & Search
   const [search, setSearch] = useState('');
-  const [reasonFilter, setReasonFilter] = useState('All');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyReasonFilter, setHistoryReasonFilter] = useState('All');
   const [selectedFoodModal, setSelectedFoodModal] = useState(null);
   const [showPredictionModal, setShowPredictionModal] = useState(false);
   const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
   const [isSubmittingWaste, setIsSubmittingWaste] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState(() => getCurrentUser());
 
   // Toast & Notifications State
   const [successToast, setSuccessToast] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
   const [appliedRec, setAppliedRec] = useState(false);
 
   // AI Assistant Chat State
@@ -85,48 +100,209 @@ export default function WasteTracking({ onNavigate }) {
   const [isChatThinking, setIsChatThinking] = useState(false);
   const [showChatModal, setShowChatModal] = useState(false);
 
+  // Form Validation State
+  const [formErrors, setFormErrors] = useState({});
+
   // Record Waste Form
   const [formData, setFormData] = useState({
-    itemName: foodItems[0]?.name || 'Paneer Curry',
+    itemName: 'Paneer Butter Masala',
+    foodItemId: 'item-002',
     date: new Date().toISOString().split('T')[0],
-    time: '14:30',
-    qty: '8',
+    time: new Date().toTimeString().slice(0, 5),
+    qty: '5',
     unit: 'portions',
     reason: 'Over-preparation',
-    estimatedCost: '240',
-    notes: 'Kitchen prepared excess batch during lunch rush.'
+    estimatedCost: '475',
+    notes: 'Surplus prep during lunch service'
   });
 
-  const handleRecordWasteSubmit = async (e) => {
-    e.preventDefault();
-    const qtyNum = Number(formData.qty);
-    const costNum = Number(formData.estimatedCost);
+  // Handle auth state synchronization
+  const handleAuthSuccess = (user) => {
+    setCurrentUser(user);
+    setBackendError(null);
+    setSuccessToast(`✓ Signed in as ${user?.name || user?.email || 'Manager'}. Synchronizing database records.`);
+    loadData();
+  };
 
-    if (isNaN(qtyNum) || qtyNum <= 0) {
-      setSuccessToast('⚠️ Please enter a valid quantity greater than 0.');
-      setTimeout(() => setSuccessToast(''), 4000);
+  const handleSignOut = () => {
+    logout();
+    setCurrentUser(null);
+    setWasteLogs([]);
+    setBackendError('Signed out. Please sign in with your restaurant account to view live database records.');
+  };
+
+  // Fetch food items and waste metrics from backend on mount
+  const loadData = async () => {
+    setIsLoadingMetrics(true);
+    setBackendError(null);
+
+    // 1. Fetch Food Items
+    try {
+      const items = await getFoodItems();
+      if (Array.isArray(items) && items.length > 0) {
+        setFoodItems(items);
+        setFormData(prev => ({
+          ...prev,
+          itemName: prev.itemName || items[0].name,
+          foodItemId: prev.foodItemId || items[0].id
+        }));
+      }
+    } catch (err) {
+      console.warn("Falling back to local food items cache:", err.message);
+      const fallbackItems = apiService.getFoodItems() || [];
+      setFoodItems(fallbackItems);
+    }
+
+    // 2. Check Authentication before querying protected waste endpoints
+    if (!isAuthenticated()) {
+      setBackendError('Authentication required. Please sign in with your restaurant account to view live database records and audit history.');
+      const localData = apiService.getWasteData();
+      setWasteMetrics(localData);
+      setWasteLogs([]);
+      setIsLoadingMetrics(false);
       return;
     }
 
-    setIsSubmittingWaste(true);
+    // 3. Fetch Waste Metrics & Database Logs
     try {
-      // 1. Log to backend API
-      try {
-        await logWasteRecord({
-          itemName: formData.itemName,
-          quantity: qtyNum,
-          unit: formData.unit,
-          reason: formData.reason,
-          financialLoss: costNum,
-          date: formData.date,
-          time: formData.time || '14:30',
-          notes: formData.notes
-        });
-      } catch (backendErr) {
-        console.warn("Backend waste logging notice:", backendErr.message);
+      const metrics = await getWasteMetrics();
+      setWasteMetrics(metrics);
+      if (Array.isArray(metrics.wasteLogs)) {
+        setWasteLogs(metrics.wasteLogs);
       }
+    } catch (err) {
+      console.error("Error fetching waste metrics from backend:", err);
+      setBackendError(err.message || 'Unable to connect to backend waste service.');
+      const localData = apiService.getWasteData();
+      setWasteMetrics(localData);
+    } finally {
+      setIsLoadingMetrics(false);
+    }
+  };
 
-      // 2. Persist to local app state and reload data
+  useEffect(() => {
+    loadData();
+
+    const handleLoginEvent = (e) => {
+      setCurrentUser(e.detail?.user || getCurrentUser());
+      loadData();
+    };
+    const handleLogoutEvent = () => {
+      setCurrentUser(null);
+      setWasteLogs([]);
+      setBackendError('Signed out. Please sign in to view live database records.');
+    };
+    const handleUnauthorizedEvent = () => {
+      setCurrentUser(null);
+      setBackendError('Session expired or authentication required. Please sign in to access this feature.');
+    };
+
+    window.addEventListener('auth:login', handleLoginEvent);
+    window.addEventListener('auth:logout', handleLogoutEvent);
+    window.addEventListener('auth:unauthorized', handleUnauthorizedEvent);
+
+    return () => {
+      window.removeEventListener('auth:login', handleLoginEvent);
+      window.removeEventListener('auth:logout', handleLogoutEvent);
+      window.removeEventListener('auth:unauthorized', handleUnauthorizedEvent);
+    };
+  }, []);
+
+  // Update item selection and recalculate cost estimate
+  const handleItemSelect = (itemName) => {
+    const selected = foodItems.find(i => i.name === itemName);
+    const costPerUnit = selected ? (selected.cost || 80) : 80;
+    const qtyNum = Number(formData.qty) || 1;
+    setFormData(prev => ({
+      ...prev,
+      itemName: itemName,
+      foodItemId: selected ? selected.id : null,
+      unit: selected?.unit || prev.unit || 'portions',
+      estimatedCost: String(Math.round(costPerUnit * qtyNum))
+    }));
+    if (formErrors.itemName) {
+      setFormErrors(prev => ({ ...prev, itemName: undefined }));
+    }
+  };
+
+  // Update quantity and recalculate cost
+  const handleQtyChange = (val) => {
+    const qtyNum = Number(val);
+    const selected = foodItems.find(i => i.name === formData.itemName);
+    const costPerUnit = selected ? (selected.cost || 80) : 80;
+    setFormData(prev => ({
+      ...prev,
+      qty: val,
+      estimatedCost: (!isNaN(qtyNum) && qtyNum > 0) ? String(Math.round(costPerUnit * qtyNum)) : prev.estimatedCost
+    }));
+    if (formErrors.qty) {
+      setFormErrors(prev => ({ ...prev, qty: undefined }));
+    }
+  };
+
+  // Form Validation
+  const validateWasteForm = (data) => {
+    const errors = {};
+    if (!data.itemName || !data.itemName.trim()) {
+      errors.itemName = 'Please select a food item.';
+    }
+    const qtyNum = Number(data.qty);
+    if (isNaN(qtyNum) || qtyNum <= 0) {
+      errors.qty = 'Quantity must be a valid positive number (> 0).';
+    }
+    if (!data.unit || !data.unit.trim()) {
+      errors.unit = 'Please select a measurement unit.';
+    }
+    if (!data.reason || !data.reason.trim()) {
+      errors.reason = 'Please specify a reason for waste.';
+    }
+    if (!data.date) {
+      errors.date = 'Valid date is required.';
+    }
+    if (!data.time) {
+      errors.time = 'Valid time is required.';
+    }
+    return errors;
+  };
+
+  // Submission handler
+  const handleRecordWasteSubmit = async (e) => {
+    e.preventDefault();
+    const errors = validateWasteForm(formData);
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
+      setErrorMessage('Please address the highlighted form fields before submitting.');
+      return;
+    }
+
+    if (!isAuthenticated()) {
+      setErrorMessage('Authentication required. Please sign in with your restaurant account to record waste entries.');
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    setFormErrors({});
+    setIsSubmittingWaste(true);
+    setErrorMessage('');
+
+    const qtyNum = Number(formData.qty);
+    const costNum = Number(formData.estimatedCost) || 0;
+
+    try {
+      // Log to backend API and database
+      await logWasteRecord({
+        foodItemId: formData.foodItemId,
+        itemName: formData.itemName,
+        quantity: qtyNum,
+        unit: formData.unit,
+        reason: formData.reason,
+        financialLoss: costNum,
+        date: formData.date,
+        time: formData.time || '14:30',
+        notes: formData.notes
+      });
+
+      // Also sync to local state
       apiService.recordWasteEntry({
         itemName: formData.itemName,
         qty: qtyNum,
@@ -136,14 +312,69 @@ export default function WasteTracking({ onNavigate }) {
         date: formData.date
       });
 
-      setWasteData(apiService.getWasteData());
+      // Reload real telemetry from backend
+      const updatedMetrics = await getWasteMetrics();
+      setWasteMetrics(updatedMetrics);
+      if (Array.isArray(updatedMetrics.wasteLogs)) {
+        setWasteLogs(updatedMetrics.wasteLogs);
+      }
+
       setIsRecordModalOpen(false);
-      setSuccessToast(`✓ Waste record of ${formData.qty} ${formData.unit} for ${formData.itemName} submitted successfully!`);
+      setSuccessToast(`✓ Waste record of ${qtyNum} ${formData.unit} for "${formData.itemName}" saved to database successfully!`);
+
+      // Reset form to clean default
+      setFormData({
+        itemName: foodItems[0]?.name || 'Paneer Butter Masala',
+        foodItemId: foodItems[0]?.id || 'item-002',
+        date: new Date().toISOString().split('T')[0],
+        time: new Date().toTimeString().slice(0, 5),
+        qty: '1',
+        unit: foodItems[0]?.unit || 'portions',
+        reason: 'Over-preparation',
+        estimatedCost: String(foodItems[0]?.cost || '85'),
+        notes: ''
+      });
     } catch (err) {
-      setSuccessToast(`❌ Error: ${err.message || 'Failed to record waste'}`);
+      console.error('Failed to save waste record:', err);
+      if (err.message && (err.message.includes('Session expired') || err.message.includes('authentication required') || err.message.includes('401'))) {
+        setIsAuthModalOpen(true);
+      }
+      setErrorMessage(`❌ Failed to record waste: ${err.message || 'Server error'}`);
     } finally {
       setIsSubmittingWaste(false);
-      setTimeout(() => setSuccessToast(''), 4500);
+      setTimeout(() => setSuccessToast(''), 5000);
+    }
+  };
+
+  // Delete a waste log entry with backend confirmation
+  const handleDeleteWasteLog = async (logId, itemName) => {
+    if (!isAuthenticated()) {
+      setErrorMessage('Authentication required. Please sign in to remove waste audit records.');
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to remove the waste audit record for "${itemName}"?`)) {
+      return;
+    }
+    setDeletingId(logId);
+    try {
+      await deleteWasteRecord(logId);
+      const updatedMetrics = await getWasteMetrics();
+      setWasteMetrics(updatedMetrics);
+      if (Array.isArray(updatedMetrics.wasteLogs)) {
+        setWasteLogs(updatedMetrics.wasteLogs);
+      }
+      setSuccessToast(`✓ Waste entry for "${itemName}" removed successfully.`);
+      setTimeout(() => setSuccessToast(''), 4000);
+    } catch (err) {
+      console.error('Failed to delete waste log:', err);
+      if (err.message && (err.message.includes('Session expired') || err.message.includes('authentication required') || err.message.includes('401'))) {
+        setIsAuthModalOpen(true);
+      }
+      setErrorMessage(`❌ Failed to delete waste entry: ${err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -184,22 +415,53 @@ export default function WasteTracking({ onNavigate }) {
     }, 600);
   };
 
-  // Top 5 Highest Waste Foods
-  const topWasteFoods = [
-    { name: "Paneer Curry", qty: 18, cost: 540, risk: "HIGH", color: "bg-[#1b4332]", progress: 85, aiNote: "Over-prepared weekday lunch batch by 18 portions." },
-    { name: "Veg Biryani", qty: 12, cost: 420, risk: "MEDIUM", color: "bg-[#2d6a4f]", progress: 60, aiNote: "Night dinner shift overflow buffer." },
-    { name: "Cold Coffee", qty: 10, cost: 350, risk: "MEDIUM", color: "bg-[#d4af37]", progress: 50, aiNote: "Rainy afternoon reduced cold beverage demand." },
-    { name: "Fresh Garden Salad", qty: 8, cost: 240, risk: "HIGH", color: "bg-orange-500", progress: 40, aiNote: "High perishability on Monday salad batching." },
-    { name: "Garlic Naan", qty: 6, cost: 180, risk: "LOW", color: "bg-[#10b981]", progress: 25, aiNote: "Unclaimed dinner side orders." }
-  ];
+  // Top 5 Highest Waste Foods: prioritize backend data if available
+  const topWasteFoods = (wasteMetrics?.mostWastedItems && wasteMetrics.mostWastedItems.length > 0)
+    ? wasteMetrics.mostWastedItems.map((item, idx) => ({
+        name: item.name,
+        qty: item.wastedQty || item.qty || 0,
+        cost: item.financialLoss || item.loss || 0,
+        risk: idx === 0 ? 'HIGH' : idx < 3 ? 'MEDIUM' : 'LOW',
+        color: idx === 0 ? "bg-[#1b4332]" : idx === 1 ? "bg-[#2d6a4f]" : idx === 2 ? "bg-[#d4af37]" : "bg-orange-500",
+        progress: Math.max(25, 90 - idx * 15),
+        aiNote: `${item.name} accumulated ${item.wastedQty || item.qty} ${item.unit || 'portions'} in waste audit logs.`
+      }))
+    : [
+        { name: "Paneer Curry", qty: 18, cost: 540, risk: "HIGH", color: "bg-[#1b4332]", progress: 85, aiNote: "Over-prepared weekday lunch batch by 18 portions." },
+        { name: "Veg Biryani", qty: 12, cost: 420, risk: "MEDIUM", color: "bg-[#2d6a4f]", progress: 60, aiNote: "Night dinner shift overflow buffer." },
+        { name: "Cold Coffee", qty: 10, cost: 350, risk: "MEDIUM", color: "bg-[#d4af37]", progress: 50, aiNote: "Rainy afternoon reduced cold beverage demand." },
+        { name: "Fresh Garden Salad", qty: 8, cost: 240, risk: "HIGH", color: "bg-orange-500", progress: 40, aiNote: "High perishability on Monday salad batching." },
+        { name: "Garlic Naan", qty: 6, cost: 180, risk: "LOW", color: "bg-[#10b981]", progress: 25, aiNote: "Unclaimed dinner side orders." }
+      ];
 
-  // AI Root Cause Analysis Factors
-  const rootCauses = [
-    { cause: "Over-preparation", percentage: 46, color: "#ef4444", barWidth: "92%" },
-    { cause: "Demand Prediction Error", percentage: 27, color: "#f97316", barWidth: "54%" },
-    { cause: "Low Customer Demand", percentage: 16, color: "#eab308", barWidth: "32%" },
-    { cause: "Kitchen Variance", percentage: 11, color: "#3b82f6", barWidth: "22%" }
-  ];
+  // Root Cause Breakdown: prioritize backend breakdown if available
+  const rootCauses = (wasteMetrics?.wasteByReason && wasteMetrics.wasteByReason.length > 0)
+    ? wasteMetrics.wasteByReason.map(item => ({
+        cause: item.reason,
+        percentage: item.percentage,
+        color: item.color || "#6b7280",
+        barWidth: `${Math.min(100, item.percentage * 2)}%`
+      }))
+    : [
+        { cause: "Over-preparation", percentage: 46, color: "#ef4444", barWidth: "92%" },
+        { cause: "Demand Prediction Error", percentage: 27, color: "#f97316", barWidth: "54%" },
+        { cause: "Low Customer Demand", percentage: 16, color: "#eab308", barWidth: "32%" },
+        { cause: "Kitchen Variance", percentage: 11, color: "#3b82f6", barWidth: "22%" }
+      ];
+
+  // Dynamic Metrics values
+  const todayWasteDisplay = wasteMetrics?.todayWasteKg !== undefined ? wasteMetrics.todayWasteKg : 49;
+  const weeklyWasteDisplay = wasteMetrics?.monthlyWasteKg !== undefined ? wasteMetrics.monthlyWasteKg : 286;
+  const financialLossDisplay = wasteMetrics?.financialLoss || "₹7,420";
+
+  // Filtered waste logs for history table
+  const filteredWasteLogs = wasteLogs.filter(log => {
+    const matchesSearch = !historySearch || 
+      log.item_name.toLowerCase().includes(historySearch.toLowerCase()) ||
+      (log.notes && log.notes.toLowerCase().includes(historySearch.toLowerCase()));
+    const matchesReason = historyReasonFilter === 'All' || log.reason === historyReasonFilter;
+    return matchesSearch && matchesReason;
+  });
 
   // Trend Data per filter
   const trendDataMap = {
@@ -226,6 +488,26 @@ export default function WasteTracking({ onNavigate }) {
   };
 
   const activeTrendData = trendDataMap[trendPeriod] || trendDataMap['30 Days'];
+
+  const getReasonBadgeClass = (reason) => {
+    switch (reason) {
+      case 'Over-preparation':
+        return 'bg-red-100 text-red-900 border-red-200';
+      case 'Spoilage':
+      case 'Ingredient Spoilage':
+        return 'bg-orange-100 text-orange-900 border-orange-200';
+      case 'Low Demand':
+        return 'bg-purple-100 text-purple-900 border-purple-200';
+      case 'Cooking Error':
+      case 'Preparation Error':
+        return 'bg-blue-100 text-blue-900 border-blue-200';
+      case 'Customer Return':
+      case 'Plate Unconsumed':
+        return 'bg-amber-100 text-amber-900 border-amber-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
 
   return (
     <div className="space-y-8 pb-16 font-sans text-gray-800">
@@ -257,12 +539,12 @@ export default function WasteTracking({ onNavigate }) {
               Waste Intelligence
             </h1>
             <p className="text-gray-300 text-xs md:text-sm mt-1.5 font-medium max-w-xl">
-              "AI-powered insights to reduce unnecessary preparation and save money."
+              "AI-powered insights to reduce unnecessary preparation, save costs, and eliminate kitchen waste."
             </p>
           </div>
 
           {/* Hero Sustainability Highlight Card */}
-          <div className="bg-white/10 backdrop-blur-md p-5 rounded-3xl border border-white/15 text-center lg:text-right shrink-0 space-y-1 shadow-inner">
+          <div className="bg-white/10 backdrop-blur-md p-5 rounded-3xl border border-white/15 text-center lg:text-right shrink-0 space-y-2 shadow-inner">
             <span className="text-xs text-gray-300 font-bold uppercase tracking-wider block">Potential Waste Reduction</span>
             <p className="text-4xl md:text-5xl font-extrabold font-heading text-[#d4af37] tracking-tight">
               23%
@@ -270,15 +552,73 @@ export default function WasteTracking({ onNavigate }) {
             <p className="text-[11px] text-gray-300 max-w-xs">
               "Based on recent preparation, sales and waste patterns."
             </p>
-            <button
-              onClick={() => setIsRecordModalOpen(true)}
-              className="mt-2 px-4 py-2 rounded-xl bg-[#d4af37] hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-md transition-all cursor-pointer inline-flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" /> Record Waste Entry
-            </button>
+            <div className="flex flex-wrap items-center justify-center lg:justify-end gap-2 pt-1">
+              {currentUser ? (
+                <div className="px-3 py-1.5 rounded-xl bg-black/40 border border-emerald-500/40 text-[11px] text-emerald-200 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="truncate max-w-[130px] font-semibold">{currentUser.name || currentUser.email}</span>
+                  <button
+                    onClick={handleSignOut}
+                    className="ml-1 text-[#d4af37] hover:text-amber-300 underline font-bold cursor-pointer"
+                    title="Sign out of restaurant account"
+                  >
+                    Logout
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsAuthModalOpen(true)}
+                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-[#d4af37] text-xs font-bold border border-[#d4af37]/40 transition-all cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <Lock className="w-3.5 h-3.5" /> Staff Sign In
+                </button>
+              )}
+              <button
+                id="record-waste-hero-btn"
+                onClick={() => setIsRecordModalOpen(true)}
+                className="px-4 py-2.5 rounded-xl bg-[#d4af37] hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-md transition-all cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" /> Record Waste Entry
+              </button>
+              <button
+                onClick={() => document.getElementById('waste-form-panel')?.scrollIntoView({ behavior: 'smooth' })}
+                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all cursor-pointer"
+                title="Scroll down to inline waste logging form"
+              >
+                Jump to Form ↓
+              </button>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Recoverable Backend Error Banner */}
+      {backendError && (
+        <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-900 font-medium text-xs md:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+            <span>
+              <strong>Backend Notice:</strong> {backendError}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            {(!currentUser || backendError.toLowerCase().includes('sign in') || backendError.toLowerCase().includes('authentication') || backendError.toLowerCase().includes('session')) && (
+              <button 
+                onClick={() => setIsAuthModalOpen(true)}
+                className="px-3.5 py-1.5 rounded-xl bg-[#1b4332] hover:bg-[#2d6a4f] text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                <Lock className="w-3.5 h-3.5 text-[#d4af37]" /> Sign In
+              </button>
+            )}
+            <button 
+              onClick={loadData}
+              className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Retry Connection
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Success Toast */}
       {successToast && (
@@ -288,6 +628,19 @@ export default function WasteTracking({ onNavigate }) {
             <span>{successToast}</span>
           </div>
           <button onClick={() => setSuccessToast('')} className="text-white/80 hover:text-white text-xs underline cursor-pointer">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* General Error Message Toast */}
+      {errorMessage && (
+        <div className="p-4 rounded-2xl bg-red-600 text-white font-bold text-xs md:text-sm flex items-center justify-between gap-3 animate-fade-in shadow-xl border border-red-400/40">
+          <div className="flex items-center gap-2.5">
+            <AlertOctagon className="w-5 h-5 text-red-200 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+          <button onClick={() => setErrorMessage('')} className="text-white/80 hover:text-white text-xs underline cursor-pointer">
             Dismiss
           </button>
         </div>
@@ -304,7 +657,7 @@ export default function WasteTracking({ onNavigate }) {
           </div>
           <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Today's Waste</span>
           <p className="text-3xl font-extrabold font-heading text-gray-900 tracking-tight">
-            <AnimatedCounter value={49} suffix=" portions" />
+            <AnimatedCounter value={Number(todayWasteDisplay) || 0} suffix=" portions" />
           </p>
           <span className="text-[10px] text-emerald-700 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
             <TrendingDown className="w-3 h-3" /> ↓ 12% vs yesterday
@@ -316,9 +669,9 @@ export default function WasteTracking({ onNavigate }) {
           <div className="w-8 h-8 rounded-xl bg-amber-50 flex items-center justify-center text-amber-800 mb-1">
             <BarChart2 className="w-4 h-4" />
           </div>
-          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Weekly Waste</span>
+          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Weekly / Monthly Waste</span>
           <p className="text-3xl font-extrabold font-heading text-amber-800 tracking-tight">
-            <AnimatedCounter value={286} suffix=" portions" />
+            <AnimatedCounter value={Number(weeklyWasteDisplay) || 0} suffix=" portions" />
           </p>
           <span className="text-[10px] text-emerald-700 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
             <TrendingDown className="w-3 h-3" /> ↓ 18% from last week
@@ -330,9 +683,11 @@ export default function WasteTracking({ onNavigate }) {
           <div className="w-8 h-8 rounded-xl bg-red-50 flex items-center justify-center text-red-600 mb-1">
             <DollarSign className="w-4 h-4" />
           </div>
-          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Waste Cost</span>
+          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Waste Financial Loss</span>
           <p className="text-3xl font-extrabold font-heading text-red-600 tracking-tight">
-            <AnimatedCounter value={7420} prefix="₹" />
+            {typeof financialLossDisplay === 'string' && financialLossDisplay.startsWith('₹') 
+              ? financialLossDisplay 
+              : `₹${financialLossDisplay}`}
           </p>
           <span className="text-[10px] text-gray-500 font-bold bg-gray-100 px-2 py-0.5 rounded-full inline-block">
             Direct ingredient cost
@@ -506,10 +861,10 @@ export default function WasteTracking({ onNavigate }) {
           <div className="flex items-center justify-between border-b border-gray-100 pb-3">
             <div>
               <h3 className="text-base font-bold font-heading text-gray-900">Highest Waste Foods</h3>
-              <p className="text-xs text-gray-500">Top 5 items driving over-prep losses</p>
+              <p className="text-xs text-gray-500">Items driving preparation and storage losses</p>
             </div>
             <span className="text-[10px] font-extrabold text-red-600 bg-red-50 px-2.5 py-1 rounded-full border border-red-200">
-              Audit Alert
+              Telemetry Audit
             </span>
           </div>
 
@@ -586,7 +941,7 @@ export default function WasteTracking({ onNavigate }) {
           <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-200 text-xs text-amber-950 font-semibold space-y-1 shadow-2xs">
             <span className="text-[10px] uppercase font-extrabold tracking-wider text-amber-800 block">AI INSIGHT</span>
             <p className="text-gray-900 font-bold">
-              "Paneer Curry preparation has consistently exceeded actual demand during weekdays."
+              "Over-preparation accounts for the majority of recorded food waste. Dynamic batch sizes reduce this risk significantly."
             </p>
           </div>
         </div>
@@ -699,7 +1054,7 @@ export default function WasteTracking({ onNavigate }) {
           </div>
 
           <div className="p-3 rounded-xl bg-[#f4f6f0] border border-gray-200 text-xs text-gray-700 font-medium">
-            💡 <strong>AI Insight:</strong> "Better demand prediction helps restaurants prepare closer to actual demand."
+            💡 <strong>AI Insight:</strong> "Demand prediction aligns actual consumption with kitchen prep directly, reducing landfill waste."
           </div>
         </div>
 
@@ -764,134 +1119,100 @@ export default function WasteTracking({ onNavigate }) {
       </div>
 
       {/* --------------------------------------------------
-          GRID: 9. WASTE COST ANALYSIS & 11. AI WASTE PREDICTION
-      -------------------------------------------------- */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        {/* 9. WASTE COST ANALYSIS ("Financial Impact of Waste") */}
-        <div className="bg-white rounded-3xl p-6 shadow-xs border border-gray-100 space-y-5 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <h3 className="text-base font-bold font-heading text-gray-900 flex items-center gap-2">
-                <DollarSign className="w-5 h-5 text-emerald-600" /> Financial Impact of Waste
-              </h3>
-              <span className="text-xs font-extrabold text-[#d4af37] bg-[#d4af37]/15 px-2.5 py-1 rounded-full border border-[#d4af37]/30">
-                ROI Forecast
-              </span>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 text-center my-4">
-              <div className="bg-[#f4f6f0] p-4 rounded-2xl border border-gray-200">
-                <span className="text-[10px] text-gray-500 font-semibold uppercase block">Food Cost Lost</span>
-                <p className="text-xl font-extrabold text-red-600 font-heading mt-1">₹7,420</p>
-              </div>
-
-              <div className="bg-[#f4f6f0] p-4 rounded-2xl border border-gray-200">
-                <span className="text-[10px] text-gray-500 font-semibold uppercase block">Potential Monthly Savings</span>
-                <p className="text-xl font-extrabold text-[#1b4332] font-heading mt-1">₹18,600</p>
-              </div>
-
-              <div className="bg-[#f4f6f0] p-4 rounded-2xl border border-gray-200">
-                <span className="text-[10px] text-gray-500 font-semibold uppercase block">Potential Annual Savings</span>
-                <p className="text-xl font-extrabold text-[#d4af37] font-heading mt-1">₹2,23,200</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 font-bold leading-relaxed">
-            💰 "Reducing waste is not only sustainable — it directly improves profitability."
-          </div>
-        </div>
-
-        {/* 11. AI WASTE PREDICTION ("Tomorrow's Waste Risk") */}
-        <div className="bg-white rounded-3xl p-6 shadow-xs border border-gray-100 space-y-4">
-          <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-            <h3 className="text-base font-bold font-heading text-gray-900 flex items-center gap-2">
-              <ShieldAlert className="w-5 h-5 text-amber-600" /> Tomorrow's Waste Risk
-            </h3>
-            <span className="text-xs font-mono text-gray-500">AI Predictive Audit</span>
-          </div>
-
-          <div className="space-y-3">
-            {tomorrowRisk.map((item, idx) => (
-              <div key={idx} className={`p-3.5 rounded-2xl border space-y-1 ${item.color}`}>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-extrabold text-gray-900 text-sm">{item.name}</span>
-                  <span className="font-extrabold px-2.5 py-0.5 rounded-full text-[10px] uppercase bg-white/80">
-                    Risk: {item.risk} ({item.score}%)
-                  </span>
-                </div>
-                <p className="text-xs font-semibold text-gray-800">
-                  Predicted Waste: <strong>{item.predictedWaste} portions</strong>
-                </p>
-                <p className="text-[11px] font-bold text-[#1b4332]">
-                  Recommended Action: {item.action}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-
-      {/* --------------------------------------------------
           10. WASTE RECORDING FORM (Clean Form Panel)
       -------------------------------------------------- */}
-      <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xs border border-gray-100 space-y-6">
-        <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+      <div id="waste-form-panel" className="bg-white rounded-3xl p-6 md:p-8 shadow-xs border border-gray-100 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-gray-100 pb-4 gap-2">
           <div>
             <h3 className="text-xl font-bold font-heading text-gray-900 flex items-center gap-2">
-              <Plus className="w-5 h-5 text-[#1b4332]" /> Record Food Waste Entry
+              <Plus className="w-5 h-5 text-[#1b4332]" /> Add Waste Record
             </h3>
-            <p className="text-xs text-gray-500 font-medium">Log kitchen waste for real-time AI model learning and cost tracking</p>
+            <p className="text-xs text-gray-500 font-medium">Log food waste to synchronize real-time analytics and optimize prep algorithms</p>
           </div>
+          <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 self-start sm:self-auto">
+            Direct Database Sync
+          </span>
         </div>
 
         <form onSubmit={handleRecordWasteSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          {/* Food Item */}
           <div>
-            <label className="block font-bold text-gray-700 mb-1">Food Item</label>
+            <label className="block font-bold text-gray-700 mb-1">
+              Food Item <span className="text-red-500">*</span>
+            </label>
             <select
               value={formData.itemName}
-              onChange={(e) => setFormData({...formData, itemName: e.target.value})}
-              className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              onChange={(e) => handleItemSelect(e.target.value)}
+              className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                formErrors.itemName ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+              }`}
             >
-              {foodItems.map(i => (
-                <option key={i.id} value={i.name}>{i.name}</option>
+              {(foodItems || []).map(i => (
+                <option key={i.id || i.name} value={i.name}>
+                  {i.name} ({i.category || 'Kitchen'})
+                </option>
               ))}
             </select>
+            {formErrors.itemName && (
+              <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.itemName}</p>
+            )}
           </div>
 
+          {/* Quantity */}
           <div>
-            <label className="block font-bold text-gray-700 mb-1">Quantity</label>
+            <label className="block font-bold text-gray-700 mb-1">
+              Quantity <span className="text-red-500">*</span>
+            </label>
             <input
               type="number"
-              required
+              min="0.1"
+              step="any"
               value={formData.qty}
-              onChange={(e) => setFormData({...formData, qty: e.target.value})}
-              className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              onChange={(e) => handleQtyChange(e.target.value)}
+              placeholder="e.g. 5"
+              className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                formErrors.qty ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+              }`}
             />
+            {formErrors.qty && (
+              <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.qty}</p>
+            )}
           </div>
 
+          {/* Unit */}
           <div>
-            <label className="block font-bold text-gray-700 mb-1">Unit</label>
+            <label className="block font-bold text-gray-700 mb-1">
+              Unit <span className="text-red-500">*</span>
+            </label>
             <select
               value={formData.unit}
-              onChange={(e) => setFormData({...formData, unit: e.target.value})}
-              className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
+              className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                formErrors.unit ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+              }`}
             >
               <option value="portions">portions</option>
               <option value="plates">plates</option>
               <option value="kg">kg</option>
               <option value="liters">liters</option>
+              <option value="bowls">bowls</option>
             </select>
+            {formErrors.unit && (
+              <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.unit}</p>
+            )}
           </div>
 
+          {/* Reason for Waste */}
           <div>
-            <label className="block font-bold text-gray-700 mb-1">Reason for Waste</label>
+            <label className="block font-bold text-gray-700 mb-1">
+              Reason for Waste <span className="text-red-500">*</span>
+            </label>
             <select
               value={formData.reason}
-              onChange={(e) => setFormData({...formData, reason: e.target.value})}
-              className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
+              className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                formErrors.reason ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+              }`}
             >
               <option value="Over-preparation">Over-preparation</option>
               <option value="Spoilage">Spoilage</option>
@@ -900,37 +1221,255 @@ export default function WasteTracking({ onNavigate }) {
               <option value="Customer Return">Customer Return</option>
               <option value="Other">Other</option>
             </select>
+            {formErrors.reason && (
+              <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.reason}</p>
+            )}
           </div>
 
+          {/* Date */}
           <div>
-            <label className="block font-bold text-gray-700 mb-1">Date</label>
+            <label className="block font-bold text-gray-700 mb-1">
+              Date <span className="text-red-500">*</span>
+            </label>
             <input
               type="date"
               value={formData.date}
-              onChange={(e) => setFormData({...formData, date: e.target.value})}
-              className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+              className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                formErrors.date ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+              }`}
             />
+            {formErrors.date && (
+              <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.date}</p>
+            )}
           </div>
 
+          {/* Time */}
+          <div>
+            <label className="block font-bold text-gray-700 mb-1">
+              Time <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="time"
+              value={formData.time}
+              onChange={(e) => setFormData({ ...formData, time: e.target.value })}
+              className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                formErrors.time ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+              }`}
+            />
+            {formErrors.time && (
+              <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.time}</p>
+            )}
+          </div>
+
+          {/* Estimated Cost Loss */}
           <div>
             <label className="block font-bold text-gray-700 mb-1">Estimated Cost Loss (₹)</label>
             <input
               type="number"
+              min="0"
+              step="any"
               value={formData.estimatedCost}
-              onChange={(e) => setFormData({...formData, estimatedCost: e.target.value})}
+              onChange={(e) => setFormData({ ...formData, estimatedCost: e.target.value })}
               className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
             />
           </div>
 
-          <div className="md:col-span-3 flex justify-end pt-2">
-            <button
-              type="submit"
-              className="px-6 py-3 rounded-2xl bg-[#1b4332] hover:bg-[#2d6a4f] text-white font-extrabold text-xs shadow-md transition-all cursor-pointer flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" /> Record Waste
-            </button>
+          {/* Kitchen Notes */}
+          <div className="md:col-span-2">
+            <label className="block font-bold text-gray-700 mb-1">Kitchen Notes (Optional)</label>
+            <input
+              type="text"
+              value={formData.notes}
+              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              placeholder="Shift details, incident note, or reason..."
+              className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="md:col-span-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-gray-100">
+            {!currentUser ? (
+              <span className="text-xs text-amber-800 font-medium flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-amber-600" /> Sign in required to save entries to the database
+              </span>
+            ) : (
+              <span className="text-xs text-emerald-800 font-medium flex items-center gap-1.5">
+                <Check className="w-3.5 h-3.5 text-emerald-600" /> Authenticated as {currentUser.name || currentUser.email}
+              </span>
+            )}
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setFormErrors({});
+                  setFormData({
+                    itemName: foodItems[0]?.name || 'Paneer Butter Masala',
+                    foodItemId: foodItems[0]?.id || 'item-002',
+                    date: new Date().toISOString().split('T')[0],
+                    time: new Date().toTimeString().slice(0, 5),
+                    qty: '1',
+                    unit: foodItems[0]?.unit || 'portions',
+                    reason: 'Over-preparation',
+                    estimatedCost: String(foodItems[0]?.cost || '85'),
+                    notes: ''
+                  });
+                }}
+                className="px-4 py-2.5 rounded-xl text-gray-600 font-semibold hover:bg-gray-100 cursor-pointer transition-all"
+              >
+                Reset Form
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingWaste}
+                className="px-6 py-2.5 rounded-xl bg-[#1b4332] hover:bg-[#2d6a4f] text-white font-extrabold text-xs shadow-md transition-all cursor-pointer flex items-center gap-2 disabled:opacity-50"
+              >
+                <Plus className="w-4 h-4" /> {isSubmittingWaste ? 'Saving to Database...' : 'Record Waste'}
+              </button>
+            </div>
           </div>
         </form>
+      </div>
+
+      {/* --------------------------------------------------
+          11. PERSISTED WASTE AUDIT RECORDS TABLE & HISTORY
+      -------------------------------------------------- */}
+      <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xs border border-gray-100 space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-gray-100 pb-4 gap-4">
+          <div>
+            <h3 className="text-xl font-bold font-heading text-gray-900 flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-[#1b4332]" /> Waste Audit Records & History
+            </h3>
+            <p className="text-xs text-gray-500 font-medium">Live synchronized database logs of verified kitchen food waste entries</p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-3" />
+              <input
+                type="text"
+                placeholder="Search food item or notes..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                className="pl-8 pr-3 py-1.5 rounded-xl bg-[#f4f6f0] border border-gray-200 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] w-48 sm:w-60"
+              />
+            </div>
+
+            {/* Filter by Reason */}
+            <select
+              value={historyReasonFilter}
+              onChange={(e) => setHistoryReasonFilter(e.target.value)}
+              className="px-3 py-1.5 rounded-xl bg-[#f4f6f0] border border-gray-200 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+            >
+              <option value="All">All Reasons</option>
+              <option value="Over-preparation">Over-preparation</option>
+              <option value="Spoilage">Spoilage</option>
+              <option value="Low Demand">Low Demand</option>
+              <option value="Cooking Error">Cooking Error</option>
+              <option value="Customer Return">Customer Return</option>
+              <option value="Other">Other</option>
+            </select>
+
+            {/* Refresh from Backend Button */}
+            <button
+              onClick={loadData}
+              disabled={isLoadingMetrics}
+              className="p-2 rounded-xl bg-[#f4f6f0] hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer border border-gray-200"
+              title="Refresh records from database"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingMetrics ? 'animate-spin text-[#1b4332]' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* History Table Container */}
+        <div className="overflow-x-auto">
+          {isLoadingMetrics && wasteLogs.length === 0 ? (
+            <div className="p-8 text-center text-xs text-gray-500 font-medium flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-[#1b4332]" />
+              Fetching waste audit records from database...
+            </div>
+          ) : !currentUser ? (
+            <div className="p-8 text-center rounded-2xl bg-[#f4f6f0] border border-gray-200 space-y-3">
+              <Lock className="w-8 h-8 text-[#1b4332] mx-auto opacity-70" />
+              <p className="text-sm font-bold text-gray-800">Staff Authentication Required</p>
+              <p className="text-xs text-gray-500 max-w-md mx-auto">
+                Sign in with your restaurant account to view live database waste logs, track verified audits, and manage recorded entries.
+              </p>
+              <button
+                onClick={() => setIsAuthModalOpen(true)}
+                className="px-4 py-2 rounded-xl bg-[#1b4332] hover:bg-[#2d6a4f] text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                <Lock className="w-3.5 h-3.5 text-[#d4af37]" /> Sign In to View Records
+              </button>
+            </div>
+          ) : filteredWasteLogs.length === 0 ? (
+            <div className="p-8 text-center rounded-2xl bg-[#f4f6f0] border border-gray-200 space-y-2">
+              <Trash2 className="w-8 h-8 text-gray-400 mx-auto opacity-70" />
+              <p className="text-sm font-bold text-gray-800">No waste audit records found</p>
+              <p className="text-xs text-gray-500">
+                {historySearch || historyReasonFilter !== 'All' 
+                  ? "No entries match your search criteria. Try clearing the filter."
+                  : "Use the form above or the 'Record Waste Entry' button to add your first entry."}
+              </p>
+            </div>
+          ) : (
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-gray-400 uppercase text-[10px] tracking-wider font-bold">
+                  <th className="py-3 px-3">Date & Time</th>
+                  <th className="py-3 px-3">Food Item</th>
+                  <th className="py-3 px-3">Wasted Quantity</th>
+                  <th className="py-3 px-3">Reason</th>
+                  <th className="py-3 px-3">Cost Loss</th>
+                  <th className="py-3 px-3">Kitchen Notes</th>
+                  <th className="py-3 px-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 font-medium text-gray-700">
+                {filteredWasteLogs.map((log) => (
+                  <tr key={log.id} className="hover:bg-[#f4f6f0]/70 transition-colors group">
+                    <td className="py-3.5 px-3 font-mono text-[11px] text-gray-600 whitespace-nowrap">
+                      <div className="font-bold text-gray-900">{log.date}</div>
+                      <div className="text-[10px] text-gray-400">{log.time || '12:00'}</div>
+                    </td>
+                    <td className="py-3.5 px-3">
+                      <div className="font-bold text-gray-900 font-heading text-sm">{log.item_name}</div>
+                      {log.food_item_id && (
+                        <div className="text-[10px] font-mono text-emerald-700">ID: {log.food_item_id}</div>
+                      )}
+                    </td>
+                    <td className="py-3.5 px-3 font-mono font-bold text-red-600 whitespace-nowrap">
+                      {log.quantity} <span className="text-[11px] text-gray-500 font-normal">{log.unit}</span>
+                    </td>
+                    <td className="py-3.5 px-3 whitespace-nowrap">
+                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${getReasonBadgeClass(log.reason)}`}>
+                        {log.reason}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-3 font-mono font-extrabold text-gray-900 whitespace-nowrap">
+                      ₹{log.financial_loss}
+                    </td>
+                    <td className="py-3.5 px-3 max-w-xs truncate text-gray-500 text-[11px]" title={log.notes}>
+                      {log.notes || '—'}
+                    </td>
+                    <td className="py-3.5 px-3 text-right whitespace-nowrap">
+                      <button
+                        onClick={() => handleDeleteWasteLog(log.id, log.item_name)}
+                        disabled={deletingId === log.id}
+                        className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                        title="Delete waste entry"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
       {/* --------------------------------------------------
@@ -1081,67 +1620,103 @@ export default function WasteTracking({ onNavigate }) {
         </Modal>
       )}
 
-      {/* Record Waste Entry Modal */}
+      {/* Record Waste Entry Modal (Bug 1 & Bug 2 Fix) */}
       {isRecordModalOpen && (
         <Modal
           isOpen={isRecordModalOpen}
-          onClose={() => setIsRecordModalOpen(false)}
+          onClose={() => {
+            setIsRecordModalOpen(false);
+            setFormErrors({});
+          }}
           title="Record Food Waste Entry"
         >
           <form onSubmit={handleRecordWasteSubmit} className="space-y-4 text-xs">
             <div className="bg-[#081c15] text-white p-3.5 rounded-2xl border border-[#1b4332] space-y-1">
-              <span className="text-[10px] text-[#d4af37] uppercase font-bold tracking-wider">Kitchen Telemetry</span>
-              <p className="text-gray-300 font-medium">Log verified food waste to synchronize real-time analytics and optimize prep algorithms.</p>
+              <span className="text-[10px] text-[#d4af37] uppercase font-bold tracking-wider">Kitchen Telemetry Audit</span>
+              <p className="text-gray-300 font-medium leading-relaxed">
+                Log verified food waste to synchronize real-time analytics and optimize prep algorithms.
+              </p>
             </div>
 
+            {/* Food Item Field */}
             <div>
-              <label className="block font-bold text-gray-700 mb-1">Food Item</label>
+              <label className="block font-bold text-gray-700 mb-1">
+                Food Item <span className="text-red-500">*</span>
+              </label>
               <select
                 value={formData.itemName}
-                onChange={(e) => setFormData({ ...formData, itemName: e.target.value })}
-                className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                onChange={(e) => handleItemSelect(e.target.value)}
+                className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                  formErrors.itemName ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+                }`}
               >
-                {foodItems.map(i => (
-                  <option key={i.id} value={i.name}>{i.name}</option>
+                {(foodItems || []).map(i => (
+                  <option key={i.id || i.name} value={i.name}>
+                    {i.name} ({i.category || 'Kitchen'})
+                  </option>
                 ))}
               </select>
+              {formErrors.itemName && (
+                <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.itemName}</p>
+              )}
             </div>
 
+            {/* Quantity and Unit Fields */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block font-bold text-gray-700 mb-1">Quantity</label>
+                <label className="block font-bold text-gray-700 mb-1">
+                  Quantity <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="number"
-                  required
                   min="0.1"
                   step="any"
                   value={formData.qty}
-                  onChange={(e) => setFormData({ ...formData, qty: e.target.value })}
-                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                  onChange={(e) => handleQtyChange(e.target.value)}
+                  placeholder="e.g. 5"
+                  className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                    formErrors.qty ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+                  }`}
                 />
+                {formErrors.qty && (
+                  <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.qty}</p>
+                )}
               </div>
 
               <div>
-                <label className="block font-bold text-gray-700 mb-1">Unit</label>
+                <label className="block font-bold text-gray-700 mb-1">
+                  Unit <span className="text-red-500">*</span>
+                </label>
                 <select
                   value={formData.unit}
                   onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
-                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                  className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                    formErrors.unit ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+                  }`}
                 >
                   <option value="portions">portions</option>
                   <option value="plates">plates</option>
                   <option value="kg">kg</option>
                   <option value="liters">liters</option>
+                  <option value="bowls">bowls</option>
                 </select>
+                {formErrors.unit && (
+                  <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.unit}</p>
+                )}
               </div>
             </div>
 
+            {/* Reason for Waste */}
             <div>
-              <label className="block font-bold text-gray-700 mb-1">Reason for Waste</label>
+              <label className="block font-bold text-gray-700 mb-1">
+                Reason for Waste <span className="text-red-500">*</span>
+              </label>
               <select
                 value={formData.reason}
                 onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
-                className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                  formErrors.reason ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+                }`}
               >
                 <option value="Over-preparation">Over-preparation</option>
                 <option value="Spoilage">Spoilage</option>
@@ -1150,47 +1725,81 @@ export default function WasteTracking({ onNavigate }) {
                 <option value="Customer Return">Customer Return</option>
                 <option value="Other">Other</option>
               </select>
+              {formErrors.reason && (
+                <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.reason}</p>
+              )}
             </div>
 
+            {/* Date and Time Fields */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block font-bold text-gray-700 mb-1">Date</label>
+                <label className="block font-bold text-gray-700 mb-1">
+                  Date <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="date"
                   value={formData.date}
                   onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                  className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                    formErrors.date ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+                  }`}
                 />
+                {formErrors.date && (
+                  <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.date}</p>
+                )}
               </div>
 
               <div>
-                <label className="block font-bold text-gray-700 mb-1">Estimated Cost Loss (₹)</label>
+                <label className="block font-bold text-gray-700 mb-1">
+                  Time <span className="text-red-500">*</span>
+                </label>
                 <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={formData.estimatedCost}
-                  onChange={(e) => setFormData({ ...formData, estimatedCost: e.target.value })}
-                  className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+                  type="time"
+                  value={formData.time}
+                  onChange={(e) => setFormData({ ...formData, time: e.target.value })}
+                  className={`w-full bg-[#f4f6f0] border rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332] ${
+                    formErrors.time ? 'border-red-400 bg-red-50/30' : 'border-gray-200'
+                  }`}
                 />
+                {formErrors.time && (
+                  <p className="text-[11px] text-red-600 font-semibold mt-1">{formErrors.time}</p>
+                )}
               </div>
             </div>
 
+            {/* Estimated Cost Loss */}
+            <div>
+              <label className="block font-bold text-gray-700 mb-1">Estimated Cost Loss (₹)</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={formData.estimatedCost}
+                onChange={(e) => setFormData({ ...formData, estimatedCost: e.target.value })}
+                className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
+              />
+            </div>
+
+            {/* Kitchen Notes */}
             <div>
               <label className="block font-bold text-gray-700 mb-1">Kitchen Notes (Optional)</label>
               <textarea
                 rows={2}
                 value={formData.notes}
                 onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                placeholder="Details about batch or incident..."
+                placeholder="Details about batch, reason, or shift incident..."
                 className="w-full bg-[#f4f6f0] border border-gray-200 rounded-xl px-3.5 py-2 font-semibold focus:outline-none focus:ring-2 focus:ring-[#1b4332]"
               />
             </div>
 
+            {/* Action Buttons */}
             <div className="pt-2 flex items-center justify-end gap-3 border-t border-gray-100">
               <button
                 type="button"
-                onClick={() => setIsRecordModalOpen(false)}
+                onClick={() => {
+                  setIsRecordModalOpen(false);
+                  setFormErrors({});
+                }}
                 className="px-4 py-2 rounded-xl text-gray-600 font-semibold hover:bg-gray-100 cursor-pointer"
               >
                 Cancel
@@ -1200,12 +1809,20 @@ export default function WasteTracking({ onNavigate }) {
                 disabled={isSubmittingWaste}
                 className="px-5 py-2.5 rounded-xl bg-[#1b4332] hover:bg-[#2d6a4f] text-white font-extrabold shadow-md transition-all cursor-pointer flex items-center gap-2 disabled:opacity-50"
               >
-                <Plus className="w-4 h-4" /> {isSubmittingWaste ? 'Recording...' : 'Record Waste'}
+                <Plus className="w-4 h-4" /> {isSubmittingWaste ? 'Saving...' : 'Save Waste Entry'}
               </button>
             </div>
           </form>
         </Modal>
       )}
+
+      {/* Staff Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={handleAuthSuccess}
+        initialMessage="Staff authentication is required to access protected waste-management database records."
+      />
 
     </div>
   );

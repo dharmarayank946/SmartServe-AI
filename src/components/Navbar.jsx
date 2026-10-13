@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, 
   Bell, 
@@ -13,15 +13,36 @@ import {
   TrendingUp,
   FileText,
   AlertTriangle,
-  ArrowRight
+  ArrowRight,
+  Lock
 } from 'lucide-react';
 import { apiService } from '../services/apiService';
+import { getCurrentUser, logout } from '../services/api';
+import AuthModal from './AuthModal';
 
 export default function Navbar({ activeTab, onSearchChange, searchTerm, setActiveTab }) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [testingApi, setTestingApi] = useState(false);
   const [apiResult, setApiResult] = useState(null);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [user, setUser] = useState(() => getCurrentUser());
+
+  useEffect(() => {
+    const handleLogin = (e) => setUser(e.detail?.user || getCurrentUser());
+    const handleLogout = () => setUser(null);
+    const handleUnauthorized = () => setUser(null);
+
+    window.addEventListener('auth:login', handleLogin);
+    window.addEventListener('auth:logout', handleLogout);
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+
+    return () => {
+      window.removeEventListener('auth:login', handleLogin);
+      window.removeEventListener('auth:logout', handleLogout);
+      window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    };
+  }, []);
 
   const config = apiService.getConfig();
   const insights = apiService.getAiInsights();
@@ -281,6 +302,31 @@ export default function Navbar({ activeTab, onSearchChange, searchTerm, setActiv
           )}
         </div>
 
+        {/* Staff Sign In / User Session status */}
+        {user ? (
+          <div className="hidden sm:flex items-center gap-2 pl-2 border-l border-gray-200 text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="font-bold text-gray-800 truncate max-w-[110px]">{user.name || user.email}</span>
+            <button
+              onClick={() => logout()}
+              className="text-[11px] text-gray-400 hover:text-amber-700 underline font-semibold ml-1 cursor-pointer"
+              title="Sign out of restaurant manager account"
+            >
+              Logout
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setIsAuthModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#1b4332] text-white hover:bg-[#2d6a4f] transition-all cursor-pointer shadow-2xs"
+            title="Sign in with restaurant manager account"
+          >
+            <Lock className="w-3 h-3 text-[#d4af37]" />
+            <span className="hidden sm:inline">Staff Sign In</span>
+            <span className="sm:hidden">Sign In</span>
+          </button>
+        )}
+
         {/* Restaurant Profile Avatar */}
         <button
           onClick={() => setActiveTab && setActiveTab('profile')}
@@ -296,6 +342,14 @@ export default function Navbar({ activeTab, onSearchChange, searchTerm, setActiv
           </div>
         </button>
       </div>
+
+      {/* Staff Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={(u) => setUser(u)}
+        initialMessage="Sign in with your restaurant account to unlock protected kitchen and audit endpoints."
+      />
     </header>
   );
 }
